@@ -752,7 +752,7 @@ export default function App() {
     }
 
     setUploading(true);
-    const files = Array.from(e.target.files);
+    const files = Array.from(e.target.files) as File[];
     
     try {
       for (const file of files) {
@@ -873,7 +873,7 @@ export default function App() {
     }
   };
 
-  const OutlineNode = ({ node }: { node: EnrichedOutlineNode }) => {
+  const OutlineNode: React.FC<{ node: EnrichedOutlineNode }> = ({ node }) => {
     const hasChildren = hasChildrenMap[node.id];
     const isCollapsed = collapsedNodes.has(node.id);
     const isLevel0 = node.depth === 0;
