@@ -1,0 +1,76 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+          (request.auth.token.email == "diogofukuoka85@gmail.com" && request.auth.token.email_verified == true)
+        );
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasOnly(['email', 'role']) &&
+             data.email is string &&
+             data.role in ['admin', 'user'];
+    }
+
+    function isValidVerse(data) {
+      return data.keys().hasOnly(['number', 'text']) &&
+             data.number is number &&
+             data.text is string && data.text.size() < 10000;
+    }
+
+    function isValidChapter(data) {
+      return data.keys().hasOnly(['verses']) &&
+             data.verses is list && data.verses.size() < 200;
+    }
+
+    function isValidOutline(data) {
+      return data.keys().hasOnly(['nodes']) &&
+             data.nodes is list && data.nodes.size() < 1000;
+    }
+
+    function isValidAnnotation(data) {
+      return (!('strokes' in data) || data.strokes is list) &&
+             (!('spaces' in data) || data.spaces is map);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && 
+                    ((request.auth.uid == userId && request.resource.data.role == 'user') || isAdmin());
+      allow update: if isAdmin() && isValidUser(request.resource.data);
+    }
+
+    match /annotations/{annotationId} {
+      allow read: if isAuthenticated() && annotationId.matches('^' + request.auth.uid + '_.*');
+      allow write: if isAuthenticated() && annotationId.matches('^' + request.auth.uid + '_.*') && isValidAnnotation(request.resource.data);
+    }
+
+    match /bible/{bookId}/chapters/{chapterNumber} {
+      allow read: if true; // Anyone can read the Bible
+      allow create, update: if isAdmin() && isValidChapter(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /outlines/{bookId} {
+      allow read: if true; // Anyone can read the outlines
+      allow create, update: if isAdmin() && isValidOutline(request.resource.data);
+      allow delete: if isAdmin();
+    }
+  }
+}

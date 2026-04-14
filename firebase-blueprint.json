@@ -1,0 +1,98 @@
+{
+  "entities": {
+    "Verse": {
+      "title": "Verse",
+      "description": "A single Bible verse",
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "number",
+          "description": "Verse number"
+        },
+        "text": {
+          "type": "string",
+          "description": "Verse text"
+        }
+      },
+      "required": ["number", "text"]
+    },
+    "Chapter": {
+      "title": "Chapter",
+      "description": "A chapter containing multiple verses",
+      "type": "object",
+      "properties": {
+        "verses": {
+          "type": "array",
+          "items": {
+            "$ref": "Verse"
+          },
+          "description": "List of verses in this chapter"
+        }
+      },
+      "required": ["verses"]
+    },
+    "OutlineNode": {
+      "title": "OutlineNode",
+      "description": "A node in the book outline",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "depth": {
+          "type": "number"
+        },
+        "text": {
+          "type": "string"
+        },
+        "targetChapter": {
+          "type": "number"
+        }
+      },
+      "required": ["id", "depth", "text"]
+    },
+    "Outline": {
+      "title": "Outline",
+      "description": "Outline for a specific Bible book",
+      "type": "object",
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "OutlineNode"
+          }
+        }
+      },
+      "required": ["nodes"]
+    },
+    "User": {
+      "title": "User",
+      "description": "User profile",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "user"]
+        }
+      },
+      "required": ["email", "role"]
+    }
+  },
+  "firestore": {
+    "/bible/{bookId}/chapters/{chapterNumber}": {
+      "schema": "Chapter",
+      "description": "Stores the verses for a specific chapter of a book"
+    },
+    "/outlines/{bookId}": {
+      "schema": "Outline",
+      "description": "Stores the outline/subtitles for a specific book"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles and roles"
+    }
+  }
+}
