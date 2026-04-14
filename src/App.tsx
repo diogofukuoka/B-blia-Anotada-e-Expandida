@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Book, Upload, ChevronRight, ChevronLeft, Menu, Info, Database, Globe, LogIn, LogOut, Search, X, Loader2, Type, List, PenTool, Eraser, Palette, Highlighter } from 'lucide-react';
+import { Book, Upload, ChevronRight, ChevronLeft, Menu, Info, Database, Globe, LogIn, LogOut, Search, X, Loader2, Type, List, PenTool, Eraser, Palette, Highlighter, UserCircle, ChevronDown, Undo2, Redo2, FoldVertical, UnfoldVertical } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { db, auth, signInWithGoogle, logOut, handleFirestoreError, OperationType } from './firebase';
 import { collection, doc, getDoc, setDoc, writeBatch, onSnapshot } from 'firebase/firestore';
@@ -159,6 +159,37 @@ const getCleanText = (text: string) => {
   return text.replace(/(?:,\s*|\s)\d+:\d+.*$/, '').replace(/(?:,\s*|\s)\d+\s*-.*$/, '').trim();
 };
 
+const toRoman = (num: number): string => {
+  const roman: Record<string, number> = {
+    M: 1000, CM: 900, D: 500, CD: 400,
+    C: 100, XC: 90, L: 50, XL: 40,
+    X: 10, IX: 9, V: 5, IV: 4, I: 1
+  };
+  let str = '';
+  for (let i of Object.keys(roman)) {
+    let q = Math.floor(num / roman[i]);
+    num -= q * roman[i];
+    str += i.repeat(q);
+  }
+  return str;
+};
+
+const toAlpha = (num: number, uppercase: boolean = true): string => {
+  const letters = 'abcdefghijklmnopqrstuvwxyz';
+  let str = '';
+  let n = num - 1;
+  while (n >= 0) {
+    str = letters[n % 26] + str;
+    n = Math.floor(n / 26) - 1;
+  }
+  return uppercase ? str.toUpperCase() : str;
+};
+
+interface EnrichedOutlineNode extends OutlineNodeData {
+  marker: string;
+  cleanText: string;
+}
+
 interface Point { x: number; y: number }
 interface Stroke { points: Point[]; color: string; width: number; tool: 'pen' | 'eraser' | 'highlighter' }
 
@@ -169,26 +200,70 @@ const DrawingCanvas = ({ storageKey, isDrawMode, drawTool, drawColor, className 
   const [currentStroke, setCurrentStroke] = useState<Stroke | null>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
 
+  const strokesRef = useRef<Stroke[]>([]);
+  const redoStackRef = useRef<Stroke[]>([]);
+
+  useEffect(() => {
+    const handleUndo = (e: any) => {
+      if (e.detail.storageKey === storageKey) {
+        if (strokesRef.current.length === 0) return;
+        const newStrokes = [...strokesRef.current];
+        const popped = newStrokes.pop()!;
+        const newRedo = [...redoStackRef.current, popped];
+        
+        strokesRef.current = newStrokes;
+        redoStackRef.current = newRedo;
+        
+        setStrokes(newStrokes);
+        saveStrokes(newStrokes);
+      }
+    };
+    const handleRedo = (e: any) => {
+      if (e.detail.storageKey === storageKey) {
+        if (redoStackRef.current.length === 0) return;
+        const newRedo = [...redoStackRef.current];
+        const popped = newRedo.pop()!;
+        const newStrokes = [...strokesRef.current, popped];
+        
+        strokesRef.current = newStrokes;
+        redoStackRef.current = newRedo;
+        
+        setStrokes(newStrokes);
+        saveStrokes(newStrokes);
+      }
+    };
+    window.addEventListener('undo-stroke', handleUndo);
+    window.addEventListener('redo-stroke', handleRedo);
+    return () => {
+      window.removeEventListener('undo-stroke', handleUndo);
+      window.removeEventListener('redo-stroke', handleRedo);
+    };
+  }, [storageKey]);
+
   useEffect(() => {
     const load = async () => {
+      let loadedStrokes: Stroke[] = [];
       if (storageKey.includes('_')) { // basic check if it's not just a local key
         try {
           const docRef = doc(db, 'annotations', storageKey);
           const snap = await getDoc(docRef);
-          if (snap.exists()) setStrokes(snap.data().strokes || []);
+          if (snap.exists()) loadedStrokes = snap.data().strokes || [];
           else {
             const local = localStorage.getItem(storageKey);
-            if (local) setStrokes(JSON.parse(local));
+            if (local) loadedStrokes = JSON.parse(local);
           }
         } catch (e) { 
           console.error(e); 
           const local = localStorage.getItem(storageKey);
-          if (local) setStrokes(JSON.parse(local));
+          if (local) loadedStrokes = JSON.parse(local);
         }
       } else {
         const local = localStorage.getItem(storageKey);
-        if (local) setStrokes(JSON.parse(local));
+        if (local) loadedStrokes = JSON.parse(local);
       }
+      setStrokes(loadedStrokes);
+      strokesRef.current = loadedStrokes;
+      redoStackRef.current = [];
     };
     load();
   }, [storageKey]);
@@ -285,10 +360,15 @@ const DrawingCanvas = ({ storageKey, isDrawMode, drawTool, drawColor, className 
   const handlePointerUp = (e: React.PointerEvent) => {
     if (!isDrawMode || !currentStroke) return;
     e.stopPropagation();
-    const newStrokes = [...strokes, currentStroke];
+    const newStrokes = [...strokesRef.current, currentStroke];
+    
+    strokesRef.current = newStrokes;
+    redoStackRef.current = [];
+    
     setStrokes(newStrokes);
     setCurrentStroke(null);
     saveStrokes(newStrokes);
+    window.dispatchEvent(new CustomEvent('stroke-added', { detail: { storageKey } }));
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
   };
 
@@ -329,10 +409,143 @@ export default function App() {
   
   const [outlineNodes, setOutlineNodes] = useState<OutlineNodeData[]>([]);
   const [selectedOutlineNodeId, setSelectedOutlineNodeId] = useState<string | null>(null);
+  const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(new Set());
+
+  const enrichedOutlineNodes = useMemo<EnrichedOutlineNode[]>(() => {
+    const counters = [0, 0, 0, 0, 0, 0, 0, 0];
+    return outlineNodes.map(node => {
+      const d = node.depth;
+      counters[d]++;
+      for (let i = d + 1; i < counters.length; i++) counters[i] = 0;
+      
+      let marker = '';
+      if (d === 0) marker = toRoman(counters[d]) + '.';
+      else if (d === 1) marker = toAlpha(counters[d], true) + '.';
+      else if (d === 2) marker = counters[d] + '.';
+      else if (d === 3) marker = toAlpha(counters[d], false) + '.';
+      else marker = '-';
+
+      const cleanText = node.text.replace(/^([IVXLCDM]+|[a-z]|[0-9]+)\s*[\.\-\)]\s*/i, '');
+
+      return { ...node, marker, cleanText };
+    });
+  }, [outlineNodes]);
+
+  const { visibleOutlineNodes, hasChildrenMap } = useMemo(() => {
+    const visible: EnrichedOutlineNode[] = [];
+    const hasChildren: Record<string, boolean> = {};
+    let currentCollapsedDepth = -1;
+
+    for (let i = 0; i < enrichedOutlineNodes.length; i++) {
+      const node = enrichedOutlineNodes[i];
+      const nextNode = enrichedOutlineNodes[i + 1];
+      hasChildren[node.id] = !!(nextNode && nextNode.depth > node.depth);
+
+      if (currentCollapsedDepth !== -1) {
+        if (node.depth > currentCollapsedDepth) {
+          continue;
+        } else {
+          currentCollapsedDepth = -1;
+        }
+      }
+
+      visible.push(node);
+
+      if (collapsedNodes.has(node.id) && currentCollapsedDepth === -1) {
+        currentCollapsedDepth = node.depth;
+      }
+    }
+    return { visibleOutlineNodes: visible, hasChildrenMap: hasChildren };
+  }, [enrichedOutlineNodes, collapsedNodes]);
+
+  const undoStackRef = useRef<string[]>([]);
+  const redoStackRef = useRef<string[]>([]);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+
+  const updateUndoUI = () => {
+    setCanUndo(undoStackRef.current.length > 0);
+    setCanRedo(redoStackRef.current.length > 0);
+  };
+
+  const handleToggleAllOutline = () => {
+    if (collapsedNodes.size > 0) {
+      setCollapsedNodes(new Set());
+    } else {
+      const allCollapsible = enrichedOutlineNodes.filter(n => hasChildrenMap[n.id]).map(n => n.id);
+      setCollapsedNodes(new Set(allCollapsible));
+    }
+  };
+
+  const handleInlineNodeClick = (nodeId: string) => {
+    let ancestors: string[] = [];
+    let currentPath: string[] = [];
+
+    for (const node of enrichedOutlineNodes) {
+      currentPath[node.depth] = node.id;
+      currentPath = currentPath.slice(0, node.depth + 1);
+
+      if (node.id === nodeId) {
+        ancestors = currentPath.slice(0, -1);
+        break;
+      }
+    }
+
+    setCollapsedNodes(prev => {
+      const next = new Set(prev);
+      ancestors.forEach(id => next.delete(id));
+      return next;
+    });
+
+    setSelectedOutlineNodeId(nodeId);
+    setOutlineOpen(true);
+
+    setTimeout(() => {
+      const sidebarEl = document.getElementById(`sidebar-node-${nodeId}`);
+      if (sidebarEl) {
+        sidebarEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 150);
+  };
+
+  useEffect(() => {
+    const handleStrokeAdded = (e: any) => {
+      undoStackRef.current.push(e.detail.storageKey);
+      if (undoStackRef.current.length > 6) undoStackRef.current.shift();
+      redoStackRef.current = [];
+      updateUndoUI();
+    };
+    window.addEventListener('stroke-added', handleStrokeAdded);
+    return () => window.removeEventListener('stroke-added', handleStrokeAdded);
+  }, []);
+
+  useEffect(() => {
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    updateUndoUI();
+  }, [selectedBook]);
+
+  const handleUndo = () => {
+    if (undoStackRef.current.length === 0) return;
+    const lastKey = undoStackRef.current.pop()!;
+    redoStackRef.current.push(lastKey);
+    if (redoStackRef.current.length > 6) redoStackRef.current.shift();
+    updateUndoUI();
+    window.dispatchEvent(new CustomEvent('undo-stroke', { detail: { storageKey: lastKey } }));
+  };
+
+  const handleRedo = () => {
+    if (redoStackRef.current.length === 0) return;
+    const lastKey = redoStackRef.current.pop()!;
+    undoStackRef.current.push(lastKey);
+    if (undoStackRef.current.length > 6) undoStackRef.current.shift();
+    updateUndoUI();
+    window.dispatchEvent(new CustomEvent('redo-stroke', { detail: { storageKey: lastKey } }));
+  };
 
   const outlineMap = useMemo(() => {
-    const map: Record<number, Record<number, OutlineNodeData[]>> = {};
-    outlineNodes.forEach(node => {
+    const map: Record<number, Record<number, EnrichedOutlineNode[]>> = {};
+    enrichedOutlineNodes.forEach(node => {
       let chapter = null;
       let verse = null;
       
@@ -355,9 +568,13 @@ export default function App() {
       }
     });
     return map;
-  }, [outlineNodes]);
+  }, [enrichedOutlineNodes]);
   
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [navMenuOpen, setNavMenuOpen] = useState(false);
+  const [navStep, setNavStep] = useState<'book' | 'chapter' | 'verse'>('book');
+  const [navSelectedBook, setNavSelectedBook] = useState(BIBLE_BOOKS[0]);
+  const [navSelectedChapter, setNavSelectedChapter] = useState(1);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
@@ -515,9 +732,16 @@ export default function App() {
     setSelectedOutlineNodeId(null);
     setCurrentPosition({ chapter: 1, verse: 1 });
     
-    if (window.innerWidth < 768) setSidebarOpen(false); 
     const container = document.getElementById('reading-pane');
     if (container) container.scrollTop = 0;
+  };
+
+  const scrollToVerse = (chapter: number, verse: number) => {
+    const el = document.querySelector(`[data-chapter="${chapter}"][data-verse="${verse}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setNavMenuOpen(false);
+    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -649,108 +873,189 @@ export default function App() {
     }
   };
 
-  const OutlineNode = ({ node }: { node: OutlineNodeData }) => (
-    <div 
-      className={`flex items-start py-2 px-3 rounded-lg cursor-pointer transition-colors ${selectedOutlineNodeId === node.id ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-slate-100 text-slate-700'}`}
-      style={{ marginLeft: `${node.depth * 1.5}rem` }}
-      onClick={() => {
-        setSelectedOutlineNodeId(node.id);
-        const inlineEl = document.getElementById(`inline-node-${node.id}`);
-        if (inlineEl) {
-          inlineEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        } else if (node.targetChapter) {
-          const el = document.getElementById(`chapter-${node.targetChapter}`);
-          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
-      }}
-    >
-      <div className={`mt-1 mr-2 text-indigo-400 ${node.depth === 0 ? 'hidden' : ''}`}>
-        <div className="w-1.5 h-1.5 rounded-full bg-current"></div>
+  const OutlineNode = ({ node }: { node: EnrichedOutlineNode }) => {
+    const hasChildren = hasChildrenMap[node.id];
+    const isCollapsed = collapsedNodes.has(node.id);
+    const isLevel0 = node.depth === 0;
+
+    return (
+      <div 
+        id={`sidebar-node-${node.id}`}
+        className={`flex items-start py-2 px-3 rounded-lg cursor-pointer transition-colors ${selectedOutlineNodeId === node.id ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-slate-100 text-slate-700'}`}
+        style={{ marginLeft: `${node.depth * 1.5}rem` }}
+        onClick={() => {
+          setSelectedOutlineNodeId(node.id);
+          const inlineEl = document.getElementById(`inline-node-${node.id}`);
+          if (inlineEl) {
+            inlineEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          } else if (node.targetChapter) {
+            const el = document.getElementById(`chapter-${node.targetChapter}`);
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }}
+      >
+        <div 
+          className={`mt-1 mr-2 flex items-center justify-center w-5 h-5 text-indigo-400 ${hasChildren ? 'hover:bg-indigo-200 hover:text-indigo-700 rounded transition-colors' : ''}`}
+          onClick={(e) => {
+            if (hasChildren) {
+              e.stopPropagation();
+              setCollapsedNodes(prev => {
+                const next = new Set(prev);
+                if (next.has(node.id)) next.delete(node.id);
+                else next.add(node.id);
+                return next;
+              });
+            }
+          }}
+        >
+          {hasChildren ? (
+            isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />
+          ) : (
+            <div className={`w-1.5 h-1.5 rounded-full bg-current ${node.depth === 0 ? 'hidden' : ''}`}></div>
+          )}
+        </div>
+        <span className={`text-sm leading-snug ${isLevel0 ? 'font-bold' : ''}`}>
+          <span className="mr-1.5">{node.marker}</span>
+          {node.cleanText}
+        </span>
       </div>
-      <span className="text-sm leading-snug">{node.text}</span>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50 font-sans text-slate-900">
       
-      {/* Barra Lateral: Livros */}
-      <aside className={`fixed md:static inset-y-0 left-0 z-40 w-64 bg-white border-r border-slate-200 transform transition-transform duration-300 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'} flex flex-col`}>
-        <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-indigo-600 text-white">
-          <h1 className="text-lg font-bold flex items-center gap-2">
-            <Book size={20} /> Bíblia de Estudo
-          </h1>
-          <button className="md:hidden text-white" onClick={() => setSidebarOpen(false)}>
-            <Menu size={24} />
-          </button>
-        </div>
-        
-        <div className="flex-1 overflow-y-auto custom-scroll p-3">
-          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 mt-2 px-2">Antigo Testamento</div>
-          {BIBLE_BOOKS.filter(b => b.test === 'vt').map(book => (
-            <button
-              key={book.id}
-              onClick={() => handleBookSelect(book)}
-              className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors mb-1 ${selectedBook.id === book.id ? 'bg-indigo-100 text-indigo-800 font-medium' : 'text-slate-600 hover:bg-slate-100'}`}
-            >
-              {book.name}
-            </button>
-          ))}
-          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 mt-4 px-2">Novo Testamento</div>
-          {BIBLE_BOOKS.filter(b => b.test === 'nt').map(book => (
-            <button
-              key={book.id}
-              onClick={() => handleBookSelect(book)}
-              className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors mb-1 ${selectedBook.id === book.id ? 'bg-indigo-100 text-indigo-800 font-medium' : 'text-slate-600 hover:bg-slate-100'}`}
-            >
-              {book.name}
-            </button>
-          ))}
-        </div>
-        
-        {/* Controles de Admin/Usuário */}
-        <div className="p-3 border-t border-slate-200 bg-slate-50 flex flex-col gap-2">
-          {isAdmin && (
-            <button 
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              className="flex items-center justify-center gap-2 w-full text-sm px-3 py-2 rounded-md bg-indigo-100 text-indigo-700 hover:bg-indigo-200 transition-colors disabled:opacity-50"
-            >
-              {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
-              <span>{uploading ? 'Enviando...' : 'Carregar DB'}</span>
-            </button>
-          )}
-          {user ? (
-            <button onClick={logOut} className="flex items-center justify-center gap-2 w-full text-sm px-3 py-2 rounded-md text-slate-600 hover:bg-slate-200 transition-colors">
-              <LogOut size={16} /> <span>Sair</span>
-            </button>
-          ) : (
-            <button onClick={signInWithGoogle} className="flex items-center justify-center gap-2 w-full text-sm px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 transition-colors">
-              <LogIn size={16} /> <span>Entrar</span>
-            </button>
-          )}
-        </div>
-      </aside>
-
       {/* Área Principal */}
       <main className="flex-1 flex flex-col h-full overflow-hidden relative">
         {/* Cabeçalho */}
-        <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between shadow-sm z-10">
-          <div className="flex items-center gap-3">
-            <button className="md:hidden p-2 -ml-2 text-slate-500 rounded-md hover:bg-slate-100" onClick={() => setSidebarOpen(true)}>
-              <Menu size={24} />
-            </button>
-            <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+        <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between shadow-sm z-30 relative">
+          <div className="flex items-center gap-3 relative">
+            <button 
+              className="text-xl font-bold text-slate-800 flex items-center gap-2 hover:bg-slate-100 px-3 py-1.5 rounded-lg transition-colors"
+              onClick={() => {
+                setNavMenuOpen(!navMenuOpen);
+                setNavStep('book');
+                setNavSelectedBook(selectedBook);
+              }}
+            >
               {selectedBook.name}
               {bookContent.length > 0 && !loadingVerses && (
                 <span className="text-indigo-600 font-sans text-lg ml-1">
                   {currentPosition.chapter}:{currentPosition.verse}
                 </span>
               )}
-            </h2>
+              <ChevronDown size={20} className={`text-slate-400 transition-transform ${navMenuOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {/* Navigation Dropdown */}
+            {navMenuOpen && (
+              <div className="absolute top-full left-0 mt-2 w-80 max-h-[70vh] bg-white rounded-xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden z-50">
+                <div className="flex items-center justify-between p-3 border-b border-slate-100 bg-slate-50">
+                  <div className="flex gap-2">
+                    <button 
+                      className={`text-sm font-medium px-2 py-1 rounded ${navStep === 'book' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-200'}`}
+                      onClick={() => setNavStep('book')}
+                    >
+                      Livro
+                    </button>
+                    <button 
+                      className={`text-sm font-medium px-2 py-1 rounded ${navStep === 'chapter' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-200'}`}
+                      onClick={() => setNavStep('chapter')}
+                      disabled={navStep === 'book'}
+                    >
+                      Capítulo
+                    </button>
+                    <button 
+                      className={`text-sm font-medium px-2 py-1 rounded ${navStep === 'verse' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-200'}`}
+                      onClick={() => setNavStep('verse')}
+                      disabled={navStep === 'book' || navStep === 'chapter'}
+                    >
+                      Versículo
+                    </button>
+                  </div>
+                  <button onClick={() => setNavMenuOpen(false)} className="text-slate-400 hover:text-slate-600">
+                    <X size={18} />
+                  </button>
+                </div>
+                
+                <div className="overflow-y-auto p-2 custom-scroll flex-1">
+                  {navStep === 'book' && (
+                    <div className="grid grid-cols-2 gap-1">
+                      <div className="col-span-2 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1 mt-2 px-2">Antigo Testamento</div>
+                      {BIBLE_BOOKS.filter(b => b.test === 'vt').map(book => (
+                        <button
+                          key={book.id}
+                          onClick={() => {
+                            setNavSelectedBook(book);
+                            setNavStep('chapter');
+                          }}
+                          className={`text-left px-3 py-2 rounded-md text-sm transition-colors ${navSelectedBook.id === book.id ? 'bg-indigo-100 text-indigo-800 font-medium' : 'text-slate-600 hover:bg-slate-100'}`}
+                        >
+                          {book.name}
+                        </button>
+                      ))}
+                      <div className="col-span-2 text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1 mt-4 px-2">Novo Testamento</div>
+                      {BIBLE_BOOKS.filter(b => b.test === 'nt').map(book => (
+                        <button
+                          key={book.id}
+                          onClick={() => {
+                            setNavSelectedBook(book);
+                            setNavStep('chapter');
+                          }}
+                          className={`text-left px-3 py-2 rounded-md text-sm transition-colors ${navSelectedBook.id === book.id ? 'bg-indigo-100 text-indigo-800 font-medium' : 'text-slate-600 hover:bg-slate-100'}`}
+                        >
+                          {book.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {navStep === 'chapter' && (
+                    <div className="grid grid-cols-5 gap-2 p-2">
+                      {Array.from({ length: navSelectedBook.chapters }, (_, i) => i + 1).map(chapter => (
+                        <button
+                          key={chapter}
+                          onClick={() => {
+                            setNavSelectedChapter(chapter);
+                            setNavStep('verse');
+                            if (navSelectedBook.id !== selectedBook.id) {
+                              handleBookSelect(navSelectedBook);
+                            }
+                          }}
+                          className="aspect-square flex items-center justify-center rounded-lg text-sm font-medium text-slate-700 hover:bg-indigo-50 hover:text-indigo-600 border border-slate-100 transition-colors"
+                        >
+                          {chapter}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {navStep === 'verse' && (
+                    <div className="grid grid-cols-5 gap-2 p-2">
+                      {/* We estimate verses or use the loaded content if it's the current book */}
+                      {navSelectedBook.id === selectedBook.id && bookContent.find(c => c.chapter === navSelectedChapter) ? (
+                        bookContent.find(c => c.chapter === navSelectedChapter)?.verses.map(verse => (
+                          <button
+                            key={verse.number}
+                            onClick={() => scrollToVerse(navSelectedChapter, verse.number)}
+                            className="aspect-square flex items-center justify-center rounded-lg text-sm font-medium text-slate-700 hover:bg-indigo-50 hover:text-indigo-600 border border-slate-100 transition-colors"
+                          >
+                            {verse.number}
+                          </button>
+                        ))
+                      ) : (
+                        <div className="col-span-5 text-center text-sm text-slate-500 py-4">
+                          Carregando versículos...
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
           
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-4">
             <div className="relative">
               <button 
                 className={`flex items-center justify-center p-2 rounded-full transition-colors ${isDrawMode ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}
@@ -814,6 +1119,39 @@ export default function App() {
               <Menu size={16} />
               <span className="hidden sm:inline">Esboço</span>
             </button>
+
+            <div className="relative">
+              <button 
+                className={`flex items-center justify-center p-2 rounded-full transition-colors ${userMenuOpen ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}
+                onClick={() => setUserMenuOpen(!userMenuOpen)}
+              >
+                <UserCircle size={20} />
+              </button>
+              
+              {userMenuOpen && (
+                <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-xl border border-slate-200 p-2 z-50">
+                  {isAdmin && (
+                    <button 
+                      onClick={() => { fileInputRef.current?.click(); setUserMenuOpen(false); }}
+                      disabled={uploading}
+                      className="flex items-center gap-2 w-full text-sm px-3 py-2 rounded-md text-slate-700 hover:bg-slate-100 transition-colors disabled:opacity-50"
+                    >
+                      {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+                      <span>{uploading ? 'Enviando...' : 'Carregar DB'}</span>
+                    </button>
+                  )}
+                  {user ? (
+                    <button onClick={() => { logOut(); setUserMenuOpen(false); }} className="flex items-center gap-2 w-full text-sm px-3 py-2 rounded-md text-slate-700 hover:bg-slate-100 transition-colors">
+                      <LogOut size={16} /> <span>Sair</span>
+                    </button>
+                  ) : (
+                    <button onClick={() => { signInWithGoogle(); setUserMenuOpen(false); }} className="flex items-center gap-2 w-full text-sm px-3 py-2 rounded-md text-slate-700 hover:bg-slate-100 transition-colors">
+                      <LogIn size={16} /> <span>Entrar</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -861,10 +1199,19 @@ export default function App() {
             <div className="w-80 bg-white border-r border-slate-200 flex flex-col hidden lg:flex shrink-0 shadow-inner">
               <div className="p-3 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
                 <h3 className="text-sm font-semibold text-slate-700">Títulos e Subtítulos</h3>
+                {outlineNodes.length > 0 && (
+                  <button 
+                    onClick={handleToggleAllOutline}
+                    className="text-slate-500 hover:text-indigo-600 p-1.5 rounded hover:bg-indigo-50 transition-colors"
+                    title={collapsedNodes.size > 0 ? "Expandir Todos" : "Recolher Todos"}
+                  >
+                    {collapsedNodes.size > 0 ? <UnfoldVertical size={16} /> : <FoldVertical size={16} />}
+                  </button>
+                )}
               </div>
               <div className="flex-1 overflow-y-auto custom-scroll p-2">
-                {outlineNodes.length > 0 ? (
-                  outlineNodes.map((node) => <OutlineNode key={node.id} node={node} />)
+                {visibleOutlineNodes.length > 0 ? (
+                  visibleOutlineNodes.map((node) => <OutlineNode key={node.id} node={node} />)
                 ) : (
                   <div className="p-4 text-center text-sm text-slate-500 flex flex-col items-center gap-3 mt-10">
                     <Info size={18} />
@@ -888,11 +1235,22 @@ export default function App() {
             <div className="lg:hidden absolute inset-0 z-30 bg-white/95 backdrop-blur-sm flex flex-col">
               <div className="p-4 border-b flex justify-between items-center bg-white">
                 <h3 className="font-bold text-slate-800">Títulos e Subtítulos - {selectedBook.name}</h3>
-                <button onClick={() => setOutlineOpen(false)} className="text-slate-500 p-2"><ChevronLeft size={16} /></button>
+                <div className="flex items-center gap-2">
+                  {outlineNodes.length > 0 && (
+                    <button 
+                      onClick={handleToggleAllOutline}
+                      className="text-slate-500 hover:text-indigo-600 p-2 rounded hover:bg-indigo-50 transition-colors"
+                      title={collapsedNodes.size > 0 ? "Expandir Todos" : "Recolher Todos"}
+                    >
+                      {collapsedNodes.size > 0 ? <UnfoldVertical size={18} /> : <FoldVertical size={18} />}
+                    </button>
+                  )}
+                  <button onClick={() => setOutlineOpen(false)} className="text-slate-500 p-2"><ChevronLeft size={20} /></button>
+                </div>
               </div>
               <div className="flex-1 overflow-y-auto p-4 custom-scroll">
-                {outlineNodes.length > 0 ? (
-                  outlineNodes.map((node) => (
+                {visibleOutlineNodes.length > 0 ? (
+                  visibleOutlineNodes.map((node) => (
                     <div key={node.id} onClick={() => setOutlineOpen(false)}>
                       <OutlineNode node={node} />
                     </div>
@@ -945,15 +1303,18 @@ export default function App() {
                                   <div 
                                     key={node.id} 
                                     id={`inline-node-${node.id}`}
-                                    className={`font-sans mt-8 mb-4 ${
+                                    onClick={() => handleInlineNodeClick(node.id)}
+                                    className={`font-sans mt-8 mb-4 cursor-pointer hover:opacity-80 transition-opacity ${
                                       node.depth === 0 ? 'text-2xl font-bold text-indigo-900 border-b border-indigo-100 pb-2' : 
                                       node.depth === 1 ? 'text-xl font-bold text-indigo-800' : 
                                       node.depth === 2 ? 'text-lg font-semibold text-indigo-700' : 
                                       'text-base font-medium text-indigo-600'
                                     } ${selectedOutlineNodeId === node.id ? 'bg-indigo-50 p-2 rounded-lg' : ''}`}
                                     style={{ marginLeft: node.depth > 0 ? `${node.depth * 1}rem` : '0' }}
+                                    title="Ver no esboço"
                                   >
-                                    {getCleanText(node.text)}
+                                    <span className="mr-2">{node.marker}</span>
+                                    {getCleanText(node.cleanText)}
                                   </div>
                                 ))}
                                 <div 
@@ -1054,6 +1415,14 @@ export default function App() {
           <div className="w-px h-6 bg-slate-200 mx-1"></div>
           <button onClick={() => setDrawTool('eraser')} className={`p-2 rounded-full transition-colors ${drawTool === 'eraser' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`} title="Borracha">
             <Eraser size={20} />
+          </button>
+
+          <div className="w-px h-6 bg-slate-200 mx-1"></div>
+          <button onClick={handleUndo} disabled={!canUndo} className={`p-2 rounded-full transition-colors ${canUndo ? 'text-slate-700 hover:bg-slate-100' : 'text-slate-300 cursor-not-allowed'}`} title="Desfazer">
+            <Undo2 size={20} />
+          </button>
+          <button onClick={handleRedo} disabled={!canRedo} className={`p-2 rounded-full transition-colors ${canRedo ? 'text-slate-700 hover:bg-slate-100' : 'text-slate-300 cursor-not-allowed'}`} title="Refazer">
+            <Redo2 size={20} />
           </button>
         </div>
       )}
