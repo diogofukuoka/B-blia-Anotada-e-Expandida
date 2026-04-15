@@ -6,7 +6,14 @@ import { collection, doc, getDoc, setDoc, writeBatch, onSnapshot } from 'firebas
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { GoogleGenAI } from '@google/genai';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let ai: GoogleGenAI | null = null;
+try {
+  if (process.env.GEMINI_API_KEY) {
+    ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  }
+} catch (e) {
+  console.error("Failed to initialize Gemini API", e);
+}
 
 const BIBLE_BOOKS = [
   { id: 'gn', name: 'Gênesis', chapters: 50, test: 'vt' }, { id: 'ex', name: 'Êxodo', chapters: 40, test: 'vt' },
@@ -592,6 +599,12 @@ export default function App() {
     
     setIsSearching(true);
     setSearchResult('');
+    
+    if (!ai) {
+      setSearchResult('A chave da API do Gemini não está configurada neste ambiente.');
+      setIsSearching(false);
+      return;
+    }
     
     try {
       const response = await ai.models.generateContent({
