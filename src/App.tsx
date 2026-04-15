@@ -6,14 +6,7 @@ import { collection, doc, getDoc, setDoc, writeBatch, onSnapshot } from 'firebas
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { GoogleGenAI } from '@google/genai';
 
-let ai: GoogleGenAI | null = null;
-try {
-  if (process.env.GEMINI_API_KEY) {
-    ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  }
-} catch (e) {
-  console.warn("Gemini API key not found or invalid. AI features will be disabled.");
-}
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const BIBLE_BOOKS = [
   { id: 'gn', name: 'Gênesis', chapters: 50, test: 'vt' }, { id: 'ex', name: 'Êxodo', chapters: 40, test: 'vt' },
@@ -601,12 +594,6 @@ export default function App() {
     setSearchResult('');
     
     try {
-      if (!ai) {
-        setSearchResult('A busca inteligente está desativada porque a chave da API não foi configurada.');
-        setIsSearching(false);
-        return;
-      }
-      
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: `Responda a seguinte pergunta sobre a Bíblia de forma clara e concisa. Pergunta: ${searchQuery}`,
@@ -765,7 +752,7 @@ export default function App() {
     }
 
     setUploading(true);
-    const files = Array.from(e.target.files) as File[];
+    const files = Array.from(e.target.files);
     
     try {
       for (const file of files) {
@@ -886,7 +873,7 @@ export default function App() {
     }
   };
 
-  const OutlineNode: React.FC<{ node: EnrichedOutlineNode }> = ({ node }) => {
+  const OutlineNode = ({ node }: { node: EnrichedOutlineNode }) => {
     const hasChildren = hasChildrenMap[node.id];
     const isCollapsed = collapsedNodes.has(node.id);
     const isLevel0 = node.depth === 0;
