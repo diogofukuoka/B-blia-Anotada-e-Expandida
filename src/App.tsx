@@ -4,16 +4,6 @@ import * as XLSX from 'xlsx';
 import { db, auth, signInWithGoogle, logOut, handleFirestoreError, OperationType } from './firebase';
 import { collection, doc, getDoc, setDoc, writeBatch, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { GoogleGenAI } from '@google/genai';
-
-let ai: GoogleGenAI | null = null;
-try {
-  if (process.env.GEMINI_API_KEY) {
-    ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  }
-} catch (e) {
-  console.error("Failed to initialize Gemini API", e);
-}
 
 const BIBLE_BOOKS = [
   { id: 'gn', name: 'Gênesis', chapters: 50, test: 'vt' }, { id: 'ex', name: 'Êxodo', chapters: 40, test: 'vt' },
@@ -588,42 +578,6 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
 
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResult, setSearchResult] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
-
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!searchQuery.trim()) return;
-    
-    setIsSearching(true);
-    setSearchResult('');
-    
-    if (!ai) {
-      setSearchResult('A chave da API do Gemini não está configurada neste ambiente.');
-      setIsSearching(false);
-      return;
-    }
-    
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `Responda a seguinte pergunta sobre a Bíblia de forma clara e concisa. Pergunta: ${searchQuery}`,
-        config: {
-          tools: [{ googleSearch: {} }],
-        }
-      });
-      
-      setSearchResult(response.text || 'Não foi possível encontrar uma resposta.');
-    } catch (error) {
-      console.error("Search error:", error);
-      setSearchResult('Ocorreu um erro ao buscar a resposta. Tente novamente.');
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
@@ -1118,14 +1072,6 @@ export default function App() {
             </div>
 
             <button 
-              className={`flex items-center gap-2 text-sm px-3 py-2 rounded-md transition-colors ${searchOpen ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-100'}`}
-              onClick={() => setSearchOpen(!searchOpen)}
-            >
-              <Search size={16} />
-              <span className="hidden sm:inline">Pesquisa IA</span>
-            </button>
-
-            <button 
               className={`flex items-center gap-2 text-sm px-3 py-2 rounded-md transition-colors ${outlineOpen ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-100'}`}
               onClick={() => setOutlineOpen(!outlineOpen)}
             >
@@ -1171,42 +1117,6 @@ export default function App() {
         {/* Divisão: Painel de Esboços & Leitor Bíblico */}
         <div className="flex-1 flex overflow-hidden">
           
-          {/* Painel de Pesquisa IA */}
-          {searchOpen && (
-            <div className="w-80 bg-white border-r border-slate-200 flex flex-col shrink-0 shadow-inner z-20 absolute lg:static inset-y-0 left-0 h-full">
-              <div className="p-3 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-                <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2"><Search size={16}/> Pesquisa Inteligente</h3>
-                <button onClick={() => setSearchOpen(false)} className="lg:hidden text-slate-500"><X size={18}/></button>
-              </div>
-              <div className="p-4 flex flex-col h-full">
-                <p className="text-xs text-slate-500 mb-4">Faça perguntas sobre a Bíblia. A IA usará o Google Search para trazer respostas atualizadas e precisas.</p>
-                <form onSubmit={handleSearch} className="mb-4">
-                  <div className="relative">
-                    <input 
-                      type="text" 
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Ex: Onde fica o Monte Sinai?" 
-                      className="w-full pl-3 pr-10 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                    <button type="submit" disabled={isSearching || !searchQuery.trim()} className="absolute right-2 top-1/2 -translate-y-1/2 text-indigo-600 disabled:text-slate-400">
-                      {isSearching ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
-                    </button>
-                  </div>
-                </form>
-                <div className="flex-1 overflow-y-auto custom-scroll text-sm text-slate-700 bg-slate-50 p-3 rounded-lg border border-slate-100">
-                  {searchResult ? (
-                    <div className="prose prose-sm prose-indigo" dangerouslySetInnerHTML={{__html: searchResult.replace(/\n/g, '<br/>')}} />
-                  ) : (
-                    <div className="text-center text-slate-400 mt-10">
-                      Os resultados da sua pesquisa aparecerão aqui.
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Painel de Esboços (Desktop) */}
           {outlineOpen && (
             <div className="w-80 bg-white border-r border-slate-200 flex flex-col hidden lg:flex shrink-0 shadow-inner">
