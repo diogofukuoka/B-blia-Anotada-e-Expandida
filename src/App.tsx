@@ -890,12 +890,12 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-50 font-sans text-slate-900">
+    <div className="flex flex-1 w-full overflow-hidden bg-slate-50 font-sans text-slate-900">
       
       {/* Área Principal */}
-      <main className="flex-1 flex flex-col h-full overflow-hidden relative">
+      <main className="flex-1 flex flex-col w-full overflow-hidden relative">
         {/* Cabeçalho */}
-        <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between shadow-sm z-30 relative">
+        <header className="shrink-0 bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between shadow-sm z-30 relative">
           <div className="flex items-center gap-3 relative">
             <button 
               className="text-xl font-bold text-slate-800 flex items-center gap-2 hover:bg-slate-100 px-3 py-1.5 rounded-lg transition-colors"
