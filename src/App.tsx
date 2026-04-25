@@ -450,57 +450,6 @@ export default function App() {
   const [isDrawMode, setIsDrawMode] = useState(false);
   const [drawTool, setDrawTool] = useState<'pen'|'eraser'|'highlighter'>('pen');
   const [drawColor, setDrawColor] = useState<string>('#4f46e5');
-
-  const readingPaneRef = useRef<HTMLDivElement>(null);
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const zoomLevelRef = useRef(1);
-
-  useEffect(() => {
-    const pane = readingPaneRef.current;
-    if (!pane) return;
-
-    let initialDist = 0;
-    let initialZoom = 1;
-
-    const handleTouchStart = (e: TouchEvent) => {
-      if (e.touches.length === 2) {
-        initialDist = Math.hypot(
-          e.touches[0].clientX - e.touches[1].clientX,
-          e.touches[0].clientY - e.touches[1].clientY
-        );
-        initialZoom = zoomLevelRef.current;
-      }
-    };
-
-    const handleTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2 && initialDist > 0) {
-        if (e.cancelable) e.preventDefault(); 
-        const dist = Math.hypot(
-          e.touches[0].clientX - e.touches[1].clientX,
-          e.touches[0].clientY - e.touches[1].clientY
-        );
-        const newZoom = Math.min(Math.max(0.7, initialZoom * (dist / initialDist)), 3);
-        zoomLevelRef.current = newZoom;
-        setZoomLevel(newZoom);
-      }
-    };
-
-    const handleTouchEnd = (e: TouchEvent) => {
-      if (e.touches.length < 2) {
-        initialDist = 0;
-      }
-    };
-
-    pane.addEventListener('touchstart', handleTouchStart, { passive: false });
-    pane.addEventListener('touchmove', handleTouchMove, { passive: false });
-    pane.addEventListener('touchend', handleTouchEnd);
-
-    return () => {
-      pane.removeEventListener('touchstart', handleTouchStart);
-      pane.removeEventListener('touchmove', handleTouchMove);
-      pane.removeEventListener('touchend', handleTouchEnd);
-    };
-  }, []);
   
   const [outlineNodes, setOutlineNodes] = useState<OutlineNodeData[]>([]);
   const [selectedOutlineNodeId, setSelectedOutlineNodeId] = useState<string | null>(null);
@@ -1288,20 +1237,24 @@ export default function App() {
 
           {/* Leitor Bíblico */}
           <div className="flex-1 flex flex-col bg-slate-50 relative overflow-hidden">
-            <div 
-              ref={readingPaneRef}
-              className="flex-1 w-full overflow-y-auto custom-scroll scroll-smooth h-full touch-pan-y" 
-              id="reading-pane"
-            >
-              <div 
-                className="w-full p-6 md:p-10 lg:px-20 min-h-full" 
-                style={{ zoom: zoomLevel } as React.CSSProperties}
+            <div className="flex-1 w-full overflow-y-auto custom-scroll scroll-smooth h-full" id="reading-pane">
+              <TransformWrapper
+                initialScale={1}
+                minScale={0.5}
+                maxScale={4}
+                centerZoomedOut={false}
+                doubleClick={{ disabled: true }}
+                wheel={{ disabled: true }}
+                panning={{ disabled: isDrawMode, lockAxisY: false }}
               >
-                <div className="max-w-3xl mx-auto pb-32">
-                  <div className="mb-8 text-center mt-4">
-                    <h1 className="text-3xl md:text-4xl font-bold text-slate-900 font-serif mb-2">{selectedBook.name}</h1>
-                    <p className="text-slate-500 text-sm uppercase tracking-widest">Almeida Corrigida Fiel</p>
-                  </div>
+                {({ zoomIn, zoomOut, resetTransform }) => (
+                  <TransformComponent wrapperStyle={{ width: '100%', minHeight: '100%' }} contentStyle={{ width: '100%' }}>
+                    <div className="w-full p-6 md:p-10 lg:px-20">
+                      <div className="max-w-3xl mx-auto pb-32">
+                        <div className="mb-8 text-center mt-4">
+                        <h1 className="text-3xl md:text-4xl font-bold text-slate-900 font-serif mb-2">{selectedBook.name}</h1>
+                        <p className="text-slate-500 text-sm uppercase tracking-widest">Almeida Corrigida Fiel</p>
+                      </div>
 
                       {loadingVerses ? (
                         <div className="space-y-4 animate-pulse">
@@ -1398,10 +1351,13 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-                </div>
-              </div>
+                </TransformComponent>
+              )}
+            </TransformWrapper>
             </div>
-        </main>
+          </div>
+        </div>
+      </main>
 
       {/* Input Oculto para Upload de Múltiplos Arquivos */}
       <input 
