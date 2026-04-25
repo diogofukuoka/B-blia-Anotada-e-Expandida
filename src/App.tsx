@@ -339,13 +339,18 @@ const DrawingCanvas = ({ storageKey, isDrawMode, drawTool, drawColor, className 
     activePointers.current.add(e.pointerId);
     if (activePointers.current.size > 1) {
       setCurrentStroke(null);
+      activePointers.current.forEach(id => {
+        try { (e.target as HTMLElement).releasePointerCapture(id); } catch (err) {}
+      });
       return;
     }
 
     const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    if (!rect || !containerRef.current) return;
+    const scaleX = rect.width / (containerRef.current.offsetWidth || 1);
+    const scaleY = rect.height / (containerRef.current.offsetHeight || 1);
+    const x = (e.clientX - rect.left) / scaleX;
+    const y = (e.clientY - rect.top) / scaleY;
     const pressure = e.pressure && e.pressure > 0 ? e.pressure : 0.5;
     const width = drawTool === 'eraser' ? 20 : (drawTool === 'highlighter' ? 24 : 2 + pressure * 2);
     
@@ -357,9 +362,11 @@ const DrawingCanvas = ({ storageKey, isDrawMode, drawTool, drawColor, className 
     if (!isDrawMode || !currentStroke || activePointers.current.size > 1) return;
     
     const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    if (!rect || !containerRef.current) return;
+    const scaleX = rect.width / (containerRef.current.offsetWidth || 1);
+    const scaleY = rect.height / (containerRef.current.offsetHeight || 1);
+    const x = (e.clientX - rect.left) / scaleX;
+    const y = (e.clientY - rect.top) / scaleY;
     setCurrentStroke(prev => prev ? { ...prev, points: [...prev.points, {x, y}] } : null);
   };
 
@@ -399,13 +406,42 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   
-  const [selectedBook, setSelectedBook] = useState(BIBLE_BOOKS[0]);
+  const [selectedBook, setSelectedBook] = useState(() => {
+    const saved = localStorage.getItem('lastReadBook');
+    if (saved) {
+      const book = BIBLE_BOOKS.find(b => b.id === saved);
+      if (book) return book;
+    }
+    return BIBLE_BOOKS[0];
+  });
   
   const [bookContent, setBookContent] = useState<{chapter: number, verses: Verse[]}[]>([]);
   const [loadingVerses, setLoadingVerses] = useState(false);
   
   const [currentPosition, setCurrentPosition] = useState({ chapter: 1, verse: 1 });
   const visibleVerses = useRef<Set<Element>>(new Set());
+  const restoredBooks = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    localStorage.setItem(`lastPosition_${selectedBook.id}`, JSON.stringify(currentPosition));
+  }, [currentPosition, selectedBook.id]);
+
+  useEffect(() => {
+    if (bookContent.length > 0 && !loadingVerses) {
+      if (restoredBooks.current.has(selectedBook.id)) return;
+      restoredBooks.current.add(selectedBook.id);
+
+      const savedStr = localStorage.getItem(`lastPosition_${selectedBook.id}`);
+      if (savedStr) {
+        try {
+          const { chapter, verse } = JSON.parse(savedStr);
+          setTimeout(() => {
+            scrollToVerse(chapter, verse);
+          }, 300);
+        } catch(e) {}
+      }
+    }
+  }, [bookContent, loadingVerses, selectedBook.id]);
   
   const [fontSize, setFontSize] = useState<string>('text-lg');
   const [lineSpacing, setLineSpacing] = useState<string>('leading-loose');
@@ -707,6 +743,7 @@ export default function App() {
 
   const handleBookSelect = (book: typeof BIBLE_BOOKS[0]) => {
     setSelectedBook(book);
+    localStorage.setItem('lastReadBook', book.id);
     setSelectedOutlineNodeId(null);
     setCurrentPosition({ chapter: 1, verse: 1 });
     
@@ -1199,8 +1236,8 @@ export default function App() {
           )}
 
           {/* Leitor Bíblico */}
-          <div className="flex-1 flex flex-col bg-slate-50 relative overflow-hidden" id="reading-pane">
-            <div className="flex-1 w-full overflow-y-auto custom-scroll scroll-smooth h-full">
+          <div className="flex-1 flex flex-col bg-slate-50 relative overflow-hidden">
+            <div className="flex-1 w-full overflow-y-auto custom-scroll scroll-smooth h-full" id="reading-pane">
               <TransformWrapper
                 initialScale={1}
                 minScale={0.5}
