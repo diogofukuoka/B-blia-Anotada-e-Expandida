@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { db, auth, signInWithGoogle, logOut, handleFirestoreError, OperationType } from './firebase';
 import { collection, doc, getDoc, setDoc, writeBatch, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
+import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 
 const BIBLE_BOOKS = [
   { id: 'gn', name: 'Gênesis', chapters: 50, test: 'vt' }, { id: 'ex', name: 'Êxodo', chapters: 40, test: 'vt' },
@@ -330,9 +331,17 @@ const DrawingCanvas = ({ storageKey, isDrawMode, drawTool, drawColor, className 
     if (currentStroke) drawStroke(currentStroke);
   }, [strokes, currentStroke, size]);
 
+  const activePointers = useRef<Set<number>>(new Set());
+
   const handlePointerDown = (e: React.PointerEvent) => {
     if (!isDrawMode) return;
-    e.stopPropagation();
+    
+    activePointers.current.add(e.pointerId);
+    if (activePointers.current.size > 1) {
+      setCurrentStroke(null);
+      return;
+    }
+
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
     const x = e.clientX - rect.left;
@@ -345,8 +354,8 @@ const DrawingCanvas = ({ storageKey, isDrawMode, drawTool, drawColor, className 
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (!isDrawMode || !currentStroke) return;
-    e.stopPropagation();
+    if (!isDrawMode || !currentStroke || activePointers.current.size > 1) return;
+    
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
     const x = e.clientX - rect.left;
@@ -355,8 +364,10 @@ const DrawingCanvas = ({ storageKey, isDrawMode, drawTool, drawColor, className 
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
+    activePointers.current.delete(e.pointerId);
+    
     if (!isDrawMode || !currentStroke) return;
-    e.stopPropagation();
+    
     const newStrokes = [...strokesRef.current, currentStroke];
     
     strokesRef.current = newStrokes;
@@ -1188,111 +1199,124 @@ export default function App() {
           )}
 
           {/* Leitor Bíblico */}
-          <div className="flex-1 flex flex-col bg-slate-50 relative overflow-hidden">
-            <div 
-              className="flex-1 overflow-y-auto custom-scroll p-6 md:p-10 lg:px-20 scroll-smooth" 
-              id="reading-pane"
-            >
-              <div className="max-w-3xl mx-auto">
-                <div className="mb-8 text-center">
-                  <h1 className="text-3xl md:text-4xl font-bold text-slate-900 font-serif mb-2">{selectedBook.name}</h1>
-                  <p className="text-slate-500 text-sm uppercase tracking-widest">Almeida Corrigida Fiel</p>
-                </div>
-
-                {loadingVerses ? (
-                  <div className="space-y-4 animate-pulse">
-                    {[...Array(10)].map((_, i) => (
-                      <div key={i} className="h-4 bg-slate-200 rounded w-full"></div>
-                    ))}
-                  </div>
-                ) : bookContent.length > 0 ? (
-                  <div className={`font-bible ${lineSpacing} ${fontSize} text-slate-800 text-justify`}>
-                    {bookContent.map((chapterData) => (
-                      <div key={chapterData.chapter} id={`chapter-${chapterData.chapter}`} className="mb-12 relative">
-                        <DrawingCanvas 
-                          storageKey={user ? `${user.uid}_${selectedBook.id}_${chapterData.chapter}` : `annotations_${selectedBook.id}_${chapterData.chapter}`}
-                          isDrawMode={isDrawMode} 
-                          drawTool={drawTool} 
-                          drawColor={drawColor} 
-                        />
-                        <h3 className="text-2xl font-bold text-slate-900 mb-4 mt-8 border-b border-slate-200 pb-2 font-sans relative z-20">Capítulo {chapterData.chapter}</h3>
-                        <div className="relative z-0">
-                          {chapterData.verses.map((verse) => {
-                            const inlineNodes = outlineMap[chapterData.chapter]?.[verse.number] || [];
-                            
-                            return (
-                              <React.Fragment key={verse.number}>
-                                {inlineNodes.map(node => (
-                                  <div 
-                                    key={node.id} 
-                                    id={`inline-node-${node.id}`}
-                                    onClick={() => handleInlineNodeClick(node.id)}
-                                    className={`font-sans mt-8 mb-4 cursor-pointer hover:opacity-80 transition-opacity ${
-                                      node.depth === 0 ? 'text-2xl font-bold text-indigo-900 border-b border-indigo-100 pb-2' : 
-                                      node.depth === 1 ? 'text-xl font-bold text-indigo-800' : 
-                                      node.depth === 2 ? 'text-lg font-semibold text-indigo-700' : 
-                                      'text-base font-medium text-indigo-600'
-                                    } ${selectedOutlineNodeId === node.id ? 'bg-indigo-50 p-2 rounded-lg' : ''}`}
-                                    style={{ marginLeft: node.depth > 0 ? `${node.depth * 1}rem` : '0' }}
-                                    title="Ver no esboço"
-                                  >
-                                    <span className="mr-2">{node.marker}</span>
-                                    {getCleanText(node.cleanText)}
-                                  </div>
-                                ))}
-                                <div 
-                                  className="verse-element mb-3 group cursor-text relative"
-                                  data-chapter={chapterData.chapter}
-                                  data-verse={verse.number}
-                                >
-                                  <sup className="text-xs font-sans font-bold text-indigo-400 mr-2 select-none">{verse.number}</sup>
-                                  <span 
-                                    className="transition-colors duration-200 hover:bg-indigo-50 rounded px-1"
-                                    dangerouslySetInnerHTML={formatVerseText(verse.text)} 
-                                  />
-                                </div>
-                              </React.Fragment>
-                            );
-                          })}
-                        </div>
+          <div className="flex-1 flex flex-col bg-slate-50 relative overflow-hidden" id="reading-pane">
+            <div className="flex-1 w-full overflow-y-auto custom-scroll scroll-smooth h-full">
+              <TransformWrapper
+                initialScale={1}
+                minScale={0.5}
+                maxScale={4}
+                centerZoomedOut={false}
+                doubleClick={{ disabled: true }}
+                wheel={{ disabled: true }}
+                panning={{ disabled: isDrawMode, lockAxisY: false }}
+              >
+                {({ zoomIn, zoomOut, resetTransform }) => (
+                  <TransformComponent wrapperStyle={{ width: '100%', minHeight: '100%' }} contentStyle={{ width: '100%' }}>
+                    <div className="w-full p-6 md:p-10 lg:px-20">
+                      <div className="max-w-3xl mx-auto pb-32">
+                        <div className="mb-8 text-center mt-4">
+                        <h1 className="text-3xl md:text-4xl font-bold text-slate-900 font-serif mb-2">{selectedBook.name}</h1>
+                        <p className="text-slate-500 text-sm uppercase tracking-widest">Almeida Corrigida Fiel</p>
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-center text-slate-500 mt-10">
-                    Versículos não encontrados no banco de dados. Por favor, faça o upload da planilha.
-                  </div>
-                )}
-                
-                {/* Navegação de Rodapé */}
-                <div className="mt-16 pt-8 border-t border-slate-200 flex justify-between items-center pb-8">
-                  <button 
-                    onClick={() => {
-                      const currentIndex = BIBLE_BOOKS.findIndex(b => b.id === selectedBook.id);
-                      if (currentIndex > 0) handleBookSelect(BIBLE_BOOKS[currentIndex - 1]);
-                    }}
-                    disabled={BIBLE_BOOKS.findIndex(b => b.id === selectedBook.id) === 0}
-                    className="flex items-center gap-2 px-4 py-2 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <ChevronLeft size={16} /> <span className="hidden sm:inline">Livro Anterior</span>
-                  </button>
-                  
-                  <div className="text-slate-400 text-sm font-medium">
-                    {selectedBook.name}
-                  </div>
 
-                  <button 
-                    onClick={() => {
-                      const currentIndex = BIBLE_BOOKS.findIndex(b => b.id === selectedBook.id);
-                      if (currentIndex < BIBLE_BOOKS.length - 1) handleBookSelect(BIBLE_BOOKS[currentIndex + 1]);
-                    }}
-                    disabled={BIBLE_BOOKS.findIndex(b => b.id === selectedBook.id) === BIBLE_BOOKS.length - 1}
-                    className="flex items-center gap-2 px-4 py-2 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <span className="hidden sm:inline">Próximo Livro</span> <ChevronRight size={16} />
-                  </button>
-                </div>
-              </div>
+                      {loadingVerses ? (
+                        <div className="space-y-4 animate-pulse">
+                          {[...Array(10)].map((_, i) => (
+                            <div key={i} className="h-4 bg-slate-200 rounded w-full"></div>
+                          ))}
+                        </div>
+                      ) : bookContent.length > 0 ? (
+                        <div className={`font-bible ${lineSpacing} ${fontSize} text-slate-800 text-justify`}>
+                          {bookContent.map((chapterData) => (
+                            <div key={chapterData.chapter} id={`chapter-${chapterData.chapter}`} className="mb-12 relative">
+                              <DrawingCanvas 
+                                storageKey={user ? `${user.uid}_${selectedBook.id}_${chapterData.chapter}` : `annotations_${selectedBook.id}_${chapterData.chapter}`}
+                                isDrawMode={isDrawMode} 
+                                drawTool={drawTool} 
+                                drawColor={drawColor} 
+                              />
+                              <h3 className="text-2xl font-bold text-slate-900 mb-4 mt-8 border-b border-slate-200 pb-2 font-sans relative z-20">Capítulo {chapterData.chapter}</h3>
+                              <div className="relative z-0">
+                                {chapterData.verses.map((verse) => {
+                                  const inlineNodes = outlineMap[chapterData.chapter]?.[verse.number] || [];
+                                  
+                                  return (
+                                    <React.Fragment key={verse.number}>
+                                      {inlineNodes.map(node => (
+                                        <div 
+                                          key={node.id} 
+                                          id={`inline-node-${node.id}`}
+                                          onClick={() => handleInlineNodeClick(node.id)}
+                                          className={`font-sans mt-8 mb-4 cursor-pointer hover:opacity-80 transition-opacity ${
+                                            node.depth === 0 ? 'text-2xl font-bold text-indigo-900 border-b border-indigo-100 pb-2' : 
+                                            node.depth === 1 ? 'text-xl font-bold text-indigo-800' : 
+                                            node.depth === 2 ? 'text-lg font-semibold text-indigo-700' : 
+                                            'text-base font-medium text-indigo-600'
+                                          } ${selectedOutlineNodeId === node.id ? 'bg-indigo-50 p-2 rounded-lg' : ''}`}
+                                          style={{ marginLeft: node.depth > 0 ? `${node.depth * 1}rem` : '0' }}
+                                          title="Ver no esboço"
+                                        >
+                                          <span className="mr-2">{node.marker}</span>
+                                          {getCleanText(node.cleanText)}
+                                        </div>
+                                      ))}
+                                      <div 
+                                        className="verse-element mb-3 group cursor-text relative"
+                                        data-chapter={chapterData.chapter}
+                                        data-verse={verse.number}
+                                      >
+                                        <sup className="text-xs font-sans font-bold text-indigo-400 mr-2 select-none">{verse.number}</sup>
+                                        <span 
+                                          className="transition-colors duration-200 hover:bg-indigo-50 rounded px-1"
+                                          dangerouslySetInnerHTML={formatVerseText(verse.text)} 
+                                        />
+                                      </div>
+                                    </React.Fragment>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-center text-slate-500 mt-10">
+                          Versículos não encontrados no banco de dados. Por favor, faça o upload da planilha.
+                        </div>
+                      )}
+                      
+                      {/* Navegação de Rodapé */}
+                      <div className="mt-16 pt-8 border-t border-slate-200 flex justify-between items-center pb-8 border-b">
+                        <button 
+                          onClick={() => {
+                            const currentIndex = BIBLE_BOOKS.findIndex(b => b.id === selectedBook.id);
+                            if (currentIndex > 0) handleBookSelect(BIBLE_BOOKS[currentIndex - 1]);
+                          }}
+                          disabled={BIBLE_BOOKS.findIndex(b => b.id === selectedBook.id) === 0}
+                          className="flex items-center gap-2 px-4 py-2 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <ChevronLeft size={16} /> <span className="hidden sm:inline">Livro Anterior</span>
+                        </button>
+                        
+                        <div className="text-slate-400 text-sm font-medium">
+                          {selectedBook.name}
+                        </div>
+
+                        <button 
+                          onClick={() => {
+                            const currentIndex = BIBLE_BOOKS.findIndex(b => b.id === selectedBook.id);
+                            if (currentIndex < BIBLE_BOOKS.length - 1) handleBookSelect(BIBLE_BOOKS[currentIndex + 1]);
+                          }}
+                          disabled={BIBLE_BOOKS.findIndex(b => b.id === selectedBook.id) === BIBLE_BOOKS.length - 1}
+                          className="flex items-center gap-2 px-4 py-2 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <span className="hidden sm:inline">Próximo Livro</span> <ChevronRight size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </TransformComponent>
+              )}
+            </TransformWrapper>
             </div>
           </div>
         </div>
